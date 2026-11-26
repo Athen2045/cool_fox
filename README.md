@@ -30,6 +30,8 @@ elsewhere). Windows x64, an AVX2 CPU, and a Direct3D 12 GPU with shader model
 For a PC closer to a Series X (eight cores, an 8 GB card) this selector is also
 the one to use: Series S is what lets the title's GPU memory fit. See
 [docs/profiling.md](docs/profiling.md) for how to find where its frames go.
+On Linux, run it under Proton: [docs/linux.md](docs/linux.md) and
+`scripts/play-proton.sh`.
 
 ## The RX 7900 XTX fork
 

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Starts the title on Linux under Proton (umu-run) or Wine, with the settings
+# of Play-VIctory.cmd's pareto-residency selector. Untested with the title:
+# see docs/linux.md.
+#
+#   VICTORY_GAME_DIR=~/Games/MyDump scripts/play-proton.sh
+#
+# Any VICTORY_* variable already set wins over the defaults below.
+# VICTORY_EXE: another victory.exe. VICTORY_WINE=1: plain wine, not umu-run.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+game_dir=${VICTORY_GAME_DIR:?set VICTORY_GAME_DIR to your own dump folder (it holds game_scarlett_master.exe)}
+game_dir=$(realpath "$game_dir")
+title="$game_dir/game_scarlett_master.exe"
+runner=${VICTORY_EXE:-$root/target/x86_64-pc-windows-msvc/release/victory.exe}
+
+[[ -f $title ]] || { echo "No $title. Set VICTORY_GAME_DIR to your own dump folder." >&2; exit 2; }
+[[ -f $runner ]] || {
+    echo "No $runner. Build it: cargo xwin build --release --locked -p victory --target x86_64-pc-windows-msvc" >&2
+    exit 2
+}
+
+# A Linux path as Wine sees it: drive Z: is the root of the file system.
+win() { local p; p=$(realpath -m "$1"); printf 'Z:%s' "${p//\//\\}"; }
+
+# Kept outside the Wine prefix (and outside this checkout, which the tools
+# refuse to write game-derived data into), so a new prefix keeps both.
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/victory/cache-pareto
+data=${XDG_DATA_HOME:-$HOME/.local/share}/victory/data
+mkdir -p "$cache" "$data"
+
+export VICTORY_GAME_DIR="$(win "$game_dir")"
+: "${VICTORY_CACHE_DIR:=$(win "$cache")}"
+: "${VICTORY_DATA_DIR:=$(win "$data")}"
+export VICTORY_CACHE_DIR VICTORY_DATA_DIR
+
+# Play-VIctory.cmd's defaults (pareto-residency), each only if not set.
+for setting in \
+    VICTORY_AMBIENT_AIR=1.5 VICTORY_TEXTURE_NO_WAIT=1 VICTORY_RELAY=2 VICTORY_WIDE_BACK=1 \
+    VICTORY_CARD_REHASH_RUNS=1 VICTORY_JOIN_COPIES=1 VICTORY_INDIRECT_WINDOW=1 VICTORY_RELAY_COPY=1 \
+    VICTORY_CARD_STEPS=2 VICTORY_INDIRECT_BATCH=2 VICTORY_MAP_THREADS=1 VICTORY_CARD_AWAKE=1 \
+    VICTORY_SHOW_AFTER=1 VICTORY_AMBIENT=0.8 VICTORY_THIN=1 VICTORY_JOIN_PARTS=8 \
+    VICTORY_UPLOAD_AHEAD=1 VICTORY_LEVELS_ON_DEMAND=1 VICTORY_CARD_BUFFERS_MIN_KB=64; do
+    name=${setting%%=*}
+    [[ -n ${!name:-} ]] || export "$setting"
+done
+[[ -n ${VICTORY_LOG:-} || -n ${RUST_LOG:-} ]] || export VICTORY_LOG=warn
+
+args=(run "$(win "$title")" --console series-s --execute)
+if [[ ${VICTORY_WINE:-0} != 1 ]] && command -v umu-run >/dev/null; then
+    export GAMEID=${GAMEID:-umu-default} PROTONPATH=${PROTONPATH:-GE-Proton}
+    exec umu-run "$runner" "${args[@]}"
+fi
+command -v wine >/dev/null || { echo "Install umu-launcher (or wine)." >&2; exit 2; }
+echo "umu-run not found (or VICTORY_WINE=1): plain wine, without Proton's vkd3d-proton unless the prefix has it." >&2
+exec wine "$runner" "${args[@]}"
