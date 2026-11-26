@@ -27,6 +27,10 @@ residency settings, and builds its shader cache under
 elsewhere). Windows x64, an AVX2 CPU, and a Direct3D 12 GPU with shader model
 6.6 and mesh shaders are required.
 
+For a PC closer to a Series X (eight cores, an 8 GB card) this selector is also
+the one to use: Series S is what lets the title's GPU memory fit. See
+[docs/profiling.md](docs/profiling.md) for how to find where its frames go.
+
 ## The RX 7900 XTX fork
 
 A fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer
