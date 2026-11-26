@@ -211,10 +211,10 @@ impl Detached {
     }
 }
 
-/// A host list that has run and waits to be used again, and the bytes of
-/// upload memory it keeps.
+/// A host list that has run and waits to be used again, the bytes of
+/// upload memory it keeps, and when it was put aside ([`crate::host::coarse_ms`]).
 #[cfg(windows)]
-struct Idle(crate::host::HostList, u64);
+struct Idle(crate::host::HostList, u64, u64);
 
 // SAFETY: D3D12 objects are free-threaded, and an idle list is touched by
 // nobody until it is taken out again.
@@ -255,13 +255,13 @@ fn fresh_list() -> Option<crate::host::HostList> {
     let idle = {
         let mut idle = IDLE.lock().unwrap_or_else(|e| e.into_inner());
         let taken = idle.0.pop();
-        if let Some(Idle(_, bytes)) = &taken {
+        if let Some(Idle(_, bytes, _)) = &taken {
             idle.1 -= bytes;
         }
         taken
     };
     match idle {
-        Some(Idle(list, _)) => Some(list),
+        Some(Idle(list, _, _)) => Some(list),
         None => crate::host::host().and_then(|h| h.new_list().ok()),
     }
 }
@@ -288,10 +288,55 @@ pub(crate) fn recycle(lists: Vec<Detached>, ran: &[usize]) {
         let bytes = host.scratch_kept();
         let mut idle = IDLE.lock().unwrap_or_else(|e| e.into_inner());
         if idle.0.len() < IDLE_MOST.0 && idle.1 + bytes <= IDLE_MOST.1 {
-            idle.0.push(Idle(host, bytes));
+            idle.0.push(Idle(host, bytes, crate::host::coarse_ms()));
             idle.1 += bytes;
         }
     }
+}
+
+/// The idle host lists that are always kept, however long they rested.
+const IDLE_FLOOR: usize = 64;
+
+/// How many of the idle lists, oldest first (`parked`: when each was put
+/// aside, in the order they were), to let go at `now`: those that rested
+/// `idle_ms` or longer, and under memory pressure every one but the newest
+/// [`IDLE_FLOOR`]. The newest are kept either way: lists are taken from the
+/// top, so the ones at the bottom are those a frame did not need.
+fn idle_to_drop(parked: &[u64], now: u64, idle_ms: u64, pressured: bool) -> usize {
+    let most = parked.len().saturating_sub(IDLE_FLOOR);
+    if pressured {
+        return most;
+    }
+    parked[..most].iter().take_while(|&&at| now.saturating_sub(at) >= idle_ms).count()
+}
+
+/// Once a second (`crate::host`'s sweep): lets go of idle host lists that
+/// rested long ([`idle_to_drop`]). A command allocator keeps the memory of
+/// the largest list ever recorded in it over every reset, so up to
+/// [`IDLE_MOST`] lists kept at their high-water mark were most of the 9 GB
+/// the lists' allocators held (docs/findings.md); a frame takes far fewer.
+/// `VICTORY_LIST_POOL_AGE=0`: kept until the cap, as before.
+#[cfg(windows)]
+pub(crate) fn let_go_idle() {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var_os("VICTORY_LIST_POOL_AGE").is_none_or(|v| v != "0")) {
+        return;
+    }
+    let idle_ms = crate::host::ram_idle_ms(crate::residency::headroom());
+    let pressured = crate::residency::pressured();
+    let gone: Vec<Idle> = {
+        let mut idle = IDLE.lock().unwrap_or_else(|e| e.into_inner());
+        let parked: Vec<u64> = idle.0.iter().map(|i| i.2).collect();
+        let n = idle_to_drop(&parked, crate::host::coarse_ms(), idle_ms, pressured);
+        let gone: Vec<Idle> = idle.0.drain(..n).collect();
+        idle.1 -= gone.iter().map(|i| i.1).sum::<u64>();
+        gone
+    };
+    // Released outside the lock: freeing allocators takes the driver a while.
+    if !gone.is_empty() {
+        tracing::debug!(lists = gone.len(), pressured, "idle host lists let go");
+    }
+    drop(gone);
 }
 
 /// A wait for a memory value recorded into list `this`, with waits cut
@@ -2380,6 +2425,24 @@ static NEWER_THIN_FUNCTIONS: Table<160> = Table(thin::table(true));
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn idle_lists_that_rested_go_oldest_first_and_the_newest_stay() {
+        use super::{IDLE_FLOOR, idle_to_drop};
+        // Oldest first: 100 lists put aside at 0..100 ms.
+        let parked: Vec<u64> = (0..100).collect();
+        // Nothing rested long enough.
+        assert_eq!(idle_to_drop(&parked, 50, 10_000, false), 0);
+        // Those parked at 0..=9 rested 10 s at 10_009; the floor is not reached.
+        assert_eq!(idle_to_drop(&parked, 10_009, 10_000, false), 10);
+        // All rested: all but the floor go.
+        assert_eq!(idle_to_drop(&parked, 1 << 20, 10_000, false), 100 - IDLE_FLOOR);
+        // Under pressure the age does not matter.
+        assert_eq!(idle_to_drop(&parked, 0, 10_000, true), 100 - IDLE_FLOOR);
+        // A pool at or under the floor keeps everything.
+        assert_eq!(idle_to_drop(&parked[..IDLE_FLOOR], 1 << 20, 0, true), 0);
+        assert_eq!(idle_to_drop(&[], 0, 0, true), 0);
+    }
+
     use super::*;
     use crate::object::slot;
 
