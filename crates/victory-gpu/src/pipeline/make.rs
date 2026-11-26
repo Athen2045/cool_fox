@@ -43,6 +43,8 @@ pub(crate) struct Pending {
     /// Its making ended the thread making it ([`reap`]): `made` is then
     /// never set (the dead thread holds it), and no one waits for it.
     failed: AtomicBool,
+    /// When its making began ([`Pending::make`]), for [`wait`].
+    began: OnceLock<Instant>,
     /// What identifies it across runs (shader containers and state), and
     /// whether a draw or dispatch has requested it yet.
     key: String,
@@ -152,6 +154,7 @@ impl Pending {
             was_slow: AtomicBool::new(false),
             made: OnceLock::new(),
             failed: AtomicBool::new(false),
+            began: OnceLock::new(),
             key,
             used: AtomicBool::new(false),
             reported_pending: AtomicBool::new(false),
@@ -181,6 +184,7 @@ impl Pending {
     }
 
     fn make(&self) {
+        let _ = self.began.set(Instant::now());
         self.made.get_or_init(|| {
             let began = Instant::now();
             let made = HostPipeline::new(&self.shaders, self.graphics.as_deref());
@@ -367,6 +371,15 @@ fn wait(p: &Pending, frame: u64) {
     if left.is_zero() {
         return;
     }
+    // Not for one being made longer than that already: what takes seconds
+    // ends in some later frame whatever this one waits, and every frame
+    // that drew with it waited the whole budget for nothing (run merged1:
+    // one pipeline 91 s in the making, 500 ms of each 684 ms frame).
+    // Passes over the screen keep their budget. `VICTORY_PIPELINE_WAIT_LONG=1`:
+    // waited for, as before.
+    if !screen && making_long(p) {
+        return;
+    }
     let started = Instant::now();
     let (lock, done) = &DONE;
     let mut held = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -407,6 +420,13 @@ fn wait(p: &Pending, frame: u64) {
         crate::copystat::C::PipelineWaitUs,
         started.elapsed().as_micros() as u64,
     );
+}
+
+/// Whether `p` has been in the making for longer than a second.
+fn making_long(p: &Pending) -> bool {
+    static WAIT_LONG: OnceLock<bool> = OnceLock::new();
+    !*WAIT_LONG.get_or_init(|| std::env::var_os("VICTORY_PIPELINE_WAIT_LONG").is_some_and(|v| v == "1"))
+        && p.began.get().is_some_and(|t| t.elapsed() > Duration::from_secs(1))
 }
 
 const NOT_QUEUED: u8 = 0;
