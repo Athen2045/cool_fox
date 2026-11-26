@@ -1,17 +1,33 @@
-# VIctory on an RX 7900 XTX
+# VIctory on an RX 7900 XTX (and an RTX 5090 build)
 
-## Run the codec_d Windows build
+This tree carries two forks' work, newest first:
 
-Download and extract the Windows x64 ZIP from the [private releases](https://github.com/codec-d/cool_fox/releases/latest). Open PowerShell in the extracted folder and point the launcher at your own complete Xbox dump.
+- **codec_d's `pareto-residency` build** (the latest commits): Series S profile,
+  residency limits for 32 GB hosts, tested on an RTX 5090. Its log is
+  [docs/bug-journal.md](docs/bug-journal.md).
+- **The RX 7900 XTX fork** (avatarmanz/VIctory-7900XTX), which the rest of this
+  README describes, with its measurements in [docs/findings.md](docs/findings.md).
+
+## Run the pareto-residency build
+
+codec_d published a prebuilt Windows ZIP in a private release; it is not part of
+this repository. Build it from this checkout: install the pinned Rust toolchain
+and the MSVC C++ build tools with a Windows SDK, then
 
 ```powershell
-$env:VICTORY_GAME_DIR = 'D:\Games\MyDump'
+cargo build --release --locked -p victory
+$env:VICTORY_GAME_DIR = 'D:\Games\MyDump'    # your own complete Xbox dump
 .\Play-VIctory.cmd pareto-residency
 ```
 
-The launcher selects Series S and the RTX-tested residency settings. It builds its shader cache locally under `%LOCALAPPDATA%\VIctory\cache-pareto`. Set `VICTORY_CACHE_DIR` to reuse an existing cache outside the checkout. Windows x64, an AVX2 CPU, and a Direct3D 12 GPU with shader model 6.6 and mesh shader support are required.
+The launcher uses `victory-3d-rtx-pareto-residency.exe` beside it if present,
+otherwise `target\release\victory.exe`. It selects Series S and the RTX-tested
+residency settings, and builds its shader cache under
+`%LOCALAPPDATA%\VIctory\cache-pareto` (set `VICTORY_CACHE_DIR` to reuse one
+elsewhere). Windows x64, an AVX2 CPU, and a Direct3D 12 GPU with shader model
+6.6 and mesh shaders are required.
 
-To build from this checkout, install the pinned Rust toolchain and the MSVC C++ build tools with a Windows SDK, then run `cargo build --release --locked -p victory`. The same launcher finds `target\release\victory.exe`. The sections below describe the upstream AMD fork and its separate launcher.
+## The RX 7900 XTX fork
 
 A fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer
 that runs an Xbox Series title natively on Windows from files the user supplies.
@@ -22,7 +38,7 @@ one PC, without giving up the picture. It is not there yet.
 copy of the game. It is not affiliated with or endorsed by the game's developer
 or publisher.
 
-## Where it stands (2026-11-25)
+### Where it stands (2026-11-25)
 
 Tested on one machine only: Windows 11, Intel i9-12900K, 64 GB RAM, Radeon
 RX 7900 XTX, 1440p, the Series X profile.
@@ -49,15 +65,15 @@ What is known to be wrong:
   pipelines (`victory warm` makes them ahead).
 - Recording a frame in the world makes the title's own watchdog end it.
 
-## How to run it
+### How to run it
 
 You need Windows 10/11 x64, a CPU with AVX2, a Direct3D 12 GPU with shader
 model 6.6 and mesh shaders, Rust (the toolchain is pinned), the MSVC build
 tools, and your own dump of the title.
 
 ```powershell
-git clone https://github.com/avatarmanz/VIctory-7900XTX
-cd VIctory-7900XTX
+git clone https://github.com/Hasusmogus/cool_fox
+cd cool_fox
 copy victory.example.toml victory.toml      # then set your paths, outside this folder
 cargo build --locked --profile diag -p victory --features diagnostics
 scripts\play.ps1 -Exe <path of your copy's executable>
@@ -77,7 +93,7 @@ Commands, debugging switches and upstream's own description:
 [docs/README-fxceless.md](docs/README-fxceless.md). Every `VICTORY_...` switch is
 described in a comment where it is read.
 
-## What is different here
+### What is different here
 
 In short; the reasons and the measurements are in [docs/findings.md](docs/findings.md).
 
@@ -104,6 +120,8 @@ In short; the reasons and the measurements are in [docs/findings.md](docs/findin
 This is a tree of other people's work with more on top. The history is kept, and
 commits taken from elsewhere name the commit and its author.
 
+- **codec_d**: the `pareto-residency` build, Series S fixes and the residency work for
+  32 GB hosts (the newest commits).
 - **[VIctory](https://github.com/Marvisak/VIctory)** by Marvisak and its
   contributors: the loader, the runtime services, the Direct3D 12 back end and
   the shader recompiler.
