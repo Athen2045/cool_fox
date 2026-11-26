@@ -168,6 +168,7 @@ impl Shader {
                     Ok(t) => tracing::info!(
                         stage = self.stage,
                         hash = %self.hash,
+                        names = ?container_names(&self.container),
                         user_data = t.host.user_data.len(),
                         samplers = t.host.samplers.len(),
                         "shader translated"
@@ -909,4 +910,23 @@ mod tests {
             );
         }
     }
+}
+
+/// The names a title's shader container carries (`CS_..._1234abcd`), for the
+/// log: printable runs of a stage prefix, an underscore and more.
+pub(crate) fn container_names(container: &[u8]) -> Vec<String> {
+    let mut found = Vec::new();
+    for run in container.split(|b| !(b.is_ascii_alphanumeric() || *b == b'_')) {
+        if run.len() >= 6
+            && run.len() <= 96
+            && run[2] == b'_'
+            && matches!(&run[..2], b"CS" | b"PS" | b"VS" | b"MS" | b"AS" | b"GS" | b"HS" | b"DS")
+        {
+            let name = String::from_utf8_lossy(run).into_owned();
+            if !found.contains(&name) {
+                found.push(name);
+            }
+        }
+    }
+    found
 }

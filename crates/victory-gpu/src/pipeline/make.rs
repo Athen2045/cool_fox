@@ -615,18 +615,11 @@ fn ended(tid: u32) -> bool {
 /// The names the title's shader containers carry (`CS_..._1234abcd`), for
 /// the log: printable runs of a stage prefix, an underscore and more.
 fn names(p: &Pending) -> Vec<String> {
-    let mut found = Vec::new();
+    let mut found: Vec<String> = Vec::new();
     for shader in &p.shaders {
-        for run in shader.container.split(|b| !(b.is_ascii_alphanumeric() || *b == b'_')) {
-            if run.len() >= 6
-                && run.len() <= 96
-                && run[2] == b'_'
-                && matches!(&run[..2], b"CS" | b"PS" | b"VS" | b"MS" | b"AS" | b"GS" | b"HS" | b"DS")
-            {
-                let name = String::from_utf8_lossy(run).into_owned();
-                if !found.contains(&name) {
-                    found.push(name);
-                }
+        for name in super::container_names(&shader.container) {
+            if !found.contains(&name) {
+                found.push(name);
             }
         }
     }
