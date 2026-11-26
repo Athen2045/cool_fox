@@ -36,6 +36,11 @@ What it took, in the order it was found (each in its own code comment):
   it (`VICTORY_POOL_FENCED`), small cards keep fewer empty blocks, and under
   Wine the budget planned with is the system's less 1 GiB
   (`VICTORY_CARD_BUDGET_MB`).
+- **Thread priorities.** Wine sets the niceness a thread's priority asks for
+  only if it may raise priority (a hard `RLIMIT_NICE` above 20); otherwise all
+  run alike and the title's threads wait for cores behind our pipeline
+  workers and streaming. In the `gamemode` group (allowed -10 on Fedora): about
+  105 ms a frame against 120, p90 114 against 140. The script says so when off.
 - **Do not change `VICTORY_OUTPUT` on Series S**: any size but 1920x1080 made
   the title divide by zero at +0x28f03e8 while loading (its FidelityFX jitter).
 

@@ -79,6 +79,16 @@ if [[ -z ${VICTORY_UPSCALER:-} && -e /proc/driver/nvidia/version ]]; then
 fi
 
 # VICTORY_CONSOLE: series-x or series-s (series-s fits an 8 GB card: docs/profiling.md).
+# Wine hands threads the priorities asked for (the title's ahead of our
+# pipeline workers and streaming) only if it may raise priority: a hard
+# RLIMIT_NICE above 20. Without, every thread is at the same niceness, on
+# eight cores busy with some 140 threads (prologue: 120 -> 105 ms a frame,
+# p90 140 -> 114, with it). Fedora's gamemode group is allowed -10.
+if (( $(ulimit -He) <= 20 )); then
+    echo "Thread priorities off: RLIMIT_NICE is $(ulimit -He). For about 15 ms a frame less:" >&2
+    echo "  sudo usermod -aG gamemode $USER   (then log in again)" >&2
+fi
+
 args=(run "$(win "$title")" --console "${VICTORY_CONSOLE:-series-x}" --execute)
 if [[ ${VICTORY_WINE:-0} != 1 ]] && command -v umu-run >/dev/null; then
     # A GE-Proton whose wineserver keeps views in a tree (docs/linux.md): with
