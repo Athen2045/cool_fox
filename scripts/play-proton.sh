@@ -52,6 +52,8 @@ export VICTORY_LOG_FILE
 # VICTORY_AMBIENT=1 (the estimate from the frame) where Play-VIctory.cmd has
 # constant:0.8: the prologue's rooms were dark red and its yard milky white
 # with the constant, lit by their lamps and the sunset with the estimate.
+# VICTORY_HAIR=1: upstream leaves the hair strands' passes out as broken; on
+# an RTX 5060 under Proton they draw right (101 ms a frame with, 119 without).
 for setting in \
     VICTORY_AMBIENT_AIR=1.5 VICTORY_TEXTURE_NO_WAIT=1 VICTORY_RELAY=2 VICTORY_WIDE_BACK=1 \
     VICTORY_CARD_REHASH_RUNS=1 VICTORY_JOIN_COPIES=1 VICTORY_INDIRECT_WINDOW=1 VICTORY_RELAY_COPY=1 \
@@ -59,7 +61,7 @@ for setting in \
     VICTORY_SHOW_AFTER=1 VICTORY_AMBIENT=1 VICTORY_THIN=0 VICTORY_JOIN_PARTS=0 \
     VICTORY_TEXTURE_GUARD=0 VICTORY_PORT_CONSTANTS=1 VICTORY_PORT_CBV=1 \
     VICTORY_UPLOAD_AHEAD=1 VICTORY_LEVELS_ON_DEMAND=1 VICTORY_CARD_BUFFERS_MIN_KB=64 \
-    VICTORY_COMMITTED_QUERY=1; do
+    VICTORY_COMMITTED_QUERY=1 VICTORY_HAIR=1; do
     name=${setting%%=*}
     [[ -n ${!name:-} ]] || export "$setting"
 done
