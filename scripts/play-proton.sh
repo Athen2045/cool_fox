@@ -64,6 +64,14 @@ for setting in \
     [[ -n ${!name:-} ]] || export "$setting"
 done
 [[ -n ${VICTORY_LOG:-} || -n ${RUST_LOG:-} ]] || export VICTORY_LOG=warn
+# On an NVIDIA card the title's own upscaler (VICTORY_UPSCALER=6), not
+# FidelityFX's (7, the title's choice on Series S): FidelityFX's is a network
+# of 8-bit dot products, and its eight largest layers took 120 of the 200 ms
+# of an RTX 5060's frame (the prologue: 207 -> 115 ms a frame). It also
+# avoids its divide by zero at output sizes other than 1920x1080.
+if [[ -z ${VICTORY_UPSCALER:-} && -e /proc/driver/nvidia/version ]]; then
+    export VICTORY_UPSCALER=6
+fi
 
 # VICTORY_CONSOLE: series-x or series-s (series-s fits an 8 GB card: docs/profiling.md).
 args=(run "$(win "$title")" --console "${VICTORY_CONSOLE:-series-x}" --execute)
