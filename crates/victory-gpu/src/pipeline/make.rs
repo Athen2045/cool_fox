@@ -37,6 +37,9 @@ pub(crate) struct Pending {
     /// Taken by a worker from [`Queue::slow`].
     was_slow: AtomicBool,
     made: OnceLock<Option<HostPipeline>>,
+    /// Its making ended the thread making it ([`reap`]): `made` is then
+    /// never set (the dead thread holds it), and no one waits for it.
+    failed: AtomicBool,
     /// What identifies it across runs (shader containers and state), and
     /// whether a draw or dispatch has requested it yet.
     key: String,
@@ -118,8 +121,10 @@ impl Pending {
         let screen = (graphics.as_ref().is_some_and(|g| g.screen_pass())
             && shaders.iter().all(|s| s.stage != "mesh"))
             || scene_input;
-        let left_out = left_out(&shaders);
-        Pending {
+        let key = key.finalize().to_hex()[..32].to_owned();
+        let refused = left_out(&shaders).is_none() && super::library::refused(&key);
+        let left_out = left_out(&shaders).or(refused.then_some("its making ended a thread in an earlier run, left out"));
+        let pending = Pending {
             screen,
             scene_input,
             left_out,
@@ -128,9 +133,27 @@ impl Pending {
             queue_state: AtomicU8::new(NOT_QUEUED),
             was_slow: AtomicBool::new(false),
             made: OnceLock::new(),
-            key: key.finalize().to_hex()[..32].to_owned(),
+            failed: AtomicBool::new(false),
+            key,
             used: AtomicBool::new(false),
+        };
+        if refused {
+            static SAID: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+            if SAID.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default().insert(pending.key.clone()) {
+                pending.say_refused();
+            }
         }
+        pending
+    }
+
+    /// Says, once a pipeline, that it is left out for having ended a thread.
+    fn say_refused(&self) {
+        tracing::info!(
+            pipeline = %hashes(self),
+            names = ?names(self),
+            key = %self.key,
+            "a pipeline left out: making it ended a thread in an earlier run (VICTORY_REFUSED_RETRY=1: tried again)"
+        );
     }
 
     pub(super) fn key(&self) -> &str {
@@ -221,7 +244,7 @@ pub(crate) fn waiting() -> u64 {
 /// The host pipeline if it is made (or is made within the frame's budget);
 /// queues it on first use.
 pub(crate) fn ready(p: &Arc<Pending>) -> Option<&HostPipeline> {
-    if p.left_out.is_some() {
+    if p.left_out.is_some() || p.failed.load(Ordering::Relaxed) {
         return None;
     }
     // A still-pending pipeline was requested by the title too. Prewarm it
@@ -239,7 +262,7 @@ pub(crate) fn ready(p: &Arc<Pending>) -> Option<&HostPipeline> {
 /// Makes `p` on this thread if it is not made yet (waiting for a worker
 /// that is making it); whether it has a host pipeline.
 pub(crate) fn now(p: &Arc<Pending>) -> bool {
-    if p.left_out.is_some() {
+    if p.left_out.is_some() || p.failed.load(Ordering::Relaxed) {
         return false;
     }
     p.make();
@@ -301,7 +324,7 @@ fn wait(p: &Pending, frame: u64) {
     let started = Instant::now();
     let (lock, done) = &DONE;
     let mut held = lock.lock().unwrap_or_else(|e| e.into_inner());
-    while p.made.get().is_none() {
+    while p.made.get().is_none() && !p.failed.load(Ordering::Relaxed) {
         let rest = left.saturating_sub(started.elapsed());
         if rest.is_zero() {
             break;
@@ -310,6 +333,10 @@ fn wait(p: &Pending, frame: u64) {
     }
     drop(held);
     let waited = started.elapsed().min(left);
+    if p.made.get().is_none() && waited >= left {
+        reap();
+        stalled(p, waited);
+    }
     if screen && waited > Duration::from_millis(500) {
         tracing::info!(
             ms = waited.as_millis() as u64,
@@ -497,8 +524,23 @@ fn workers() -> bool {
         );
         tracing::info!(workers, "pipeline workers");
         let screens = if screens_first() { SCREEN_WORKERS } else { 0 };
+        WORKERS.store(workers, Ordering::Relaxed);
         for i in 0..workers + screens {
-            let screens_only = i >= workers;
+            running |= spawn_worker(i);
+        }
+        running
+    })
+}
+
+/// Workers that take any pipeline (the rest, up to [`SCREEN_WORKERS`] more,
+/// take passes over the screen alone).
+static WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Starts worker `i` (its slot in [`NOW_MAKING`]); whether it started.
+fn spawn_worker(i: usize) -> bool {
+    {
+        {
+            let screens_only = i >= WORKERS.load(Ordering::Relaxed);
             let spawned = std::thread::Builder::new()
                 .name(format!("victory-pipelines-{i}"))
                 .stack_size(victory_shader::emit::PIPELINE_STACK)
@@ -515,7 +557,12 @@ fn workers() -> bool {
                     }
                     loop {
                         let p = next(screens_only);
+                        // SAFETY: a plain query of this thread.
+                        let tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+                        *NOW_MAKING[i.min(NOW_MAKING.len() - 1)].lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(Making { pipeline: p.clone(), thread: tid, since: Instant::now() });
                         p.make();
+                        *NOW_MAKING[i.min(NOW_MAKING.len() - 1)].lock().unwrap_or_else(|e| e.into_inner()) = None;
                         if p.was_slow.load(Ordering::Relaxed) {
                             let mut queue = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
                             queue.slow_now -= 1;
@@ -528,14 +575,152 @@ fn workers() -> bool {
                         }
                     }
                 });
-            if let Err(e) = spawned {
-                tracing::warn!(error = %e, "no pipeline worker");
-            } else {
-                running = true;
+            match spawned {
+                Err(e) => {
+                    tracing::warn!(error = %e, "no pipeline worker");
+                    false
+                }
+                Ok(_) => true,
             }
         }
-        running
-    })
+    }
+}
+
+/// What a worker is making, on which thread, since when.
+struct Making {
+    pipeline: Arc<Pending>,
+    thread: u32,
+    since: Instant,
+}
+
+/// What each worker is making ([`stalled`], [`reap`]).
+static NOW_MAKING: [Mutex<Option<Making>>; 80] = [const { Mutex::new(None) }; 80];
+
+/// Whether the thread with id `tid` has ended (or is no more).
+fn ended(tid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{GetExitCodeThread, OpenThread, THREAD_QUERY_LIMITED_INFORMATION};
+    // SAFETY: plain queries of a thread of this process, its handle closed.
+    unsafe {
+        let Ok(thread) = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, false, tid) else {
+            return true;
+        };
+        let mut code = 0u32;
+        let ok = GetExitCodeThread(thread, &mut code).is_ok();
+        let _ = CloseHandle(thread);
+        ok && code != STILL_ACTIVE.0 as u32
+    }
+}
+
+/// The names the title's shader containers carry (`CS_..._1234abcd`), for
+/// the log: printable runs of a stage prefix, an underscore and more.
+fn names(p: &Pending) -> Vec<String> {
+    let mut found = Vec::new();
+    for shader in &p.shaders {
+        for run in shader.container.split(|b| !(b.is_ascii_alphanumeric() || *b == b'_')) {
+            if run.len() >= 6
+                && run.len() <= 96
+                && run[2] == b'_'
+                && matches!(&run[..2], b"CS" | b"PS" | b"VS" | b"MS" | b"AS" | b"GS" | b"HS" | b"DS")
+            {
+                let name = String::from_utf8_lossy(run).into_owned();
+                if !found.contains(&name) {
+                    found.push(name);
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Pipelines whose worker ended while making them (a stack overflow in the
+/// host's compiler ends a thread under Wine without an exception anyone can
+/// catch): failed, so draws go without them at once and no frame waits for
+/// them; noted, so no later run makes them; and the worker started again.
+/// Before this, the pipeline stayed "being made" for good, and every frame
+/// that drew with it waited the whole half second (run 6: 500 ms of each
+/// 525 ms frame).
+fn reap() {
+    for (i, slot) in NOW_MAKING.iter().enumerate() {
+        let dead = {
+            let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+            match slot.as_ref() {
+                Some(m) if m.since.elapsed() > Duration::from_secs(2) && ended(m.thread) => slot.take(),
+                _ => None,
+            }
+        };
+        let Some(m) = dead else { continue };
+        let p = &m.pipeline;
+        p.failed.store(true, Ordering::Relaxed);
+        super::library::note_refused(&p.key, &hashes(p));
+        if p.was_slow.load(Ordering::Relaxed) {
+            let mut queue = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+            queue.slow_now = queue.slow_now.saturating_sub(1);
+        }
+        let _ = WAITING.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |w| Some(w.saturating_sub(1)));
+        {
+            let (lock, done) = &DONE;
+            let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+            done.notify_all();
+        }
+        tracing::warn!(
+            pipeline = %hashes(p),
+            names = ?names(p),
+            key = %p.key,
+            thread = m.thread,
+            after_ms = m.since.elapsed().as_millis() as u64,
+            "a pipeline worker ended while making a pipeline (a stack overflow in the host's compiler?): \
+             its draws go without it, later runs leave it out (VICTORY_REFUSED_RETRY=1: tried again), \
+             and the worker is started again"
+        );
+        spawn_worker(i);
+    }
+}
+
+/// A wait used up what was left of the frame's budget and `p` is still not
+/// made: said, at most every 2 s, with what the workers are making, so a
+/// pipeline that nobody makes (or whose making does not end) is named.
+fn stalled(p: &Pending, waited: Duration) {
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    {
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) {
+            return;
+        }
+        *last = Some(Instant::now());
+    }
+    let workers: Vec<String> = NOW_MAKING
+        .iter()
+        .enumerate()
+        .filter_map(|(i, w)| {
+            let w = w.lock().unwrap_or_else(|e| e.into_inner());
+            w.as_ref().map(|m| {
+                format!("{i}: {} on thread {} for {} ms", hashes(&m.pipeline), m.thread, m.since.elapsed().as_millis())
+            })
+        })
+        .collect();
+    let queued = {
+        let q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+        format!(
+            "screen {}, requested {}, early {}, slow {} ({} of them being made)",
+            q.screen.len(),
+            q.requested.len(),
+            q.early.len(),
+            q.slow.len(),
+            q.slow_now
+        )
+    };
+    tracing::warn!(
+        pipeline = %hashes(p),
+        key = %p.key,
+        screen = p.screen,
+        queue_state = p.queue_state.load(Ordering::Relaxed),
+        waited_ms = waited.as_millis() as u64,
+        waiting = WAITING.load(Ordering::Relaxed),
+        %queued,
+        making = ?workers,
+        "a pipeline waited for the whole of the frame's budget and is not made"
+    );
 }
 
 /// The most pipelines waiting at once since the workers last ran out.
