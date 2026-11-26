@@ -49,11 +49,14 @@ export VICTORY_LOG_FILE
 # each only if not set; and for Wine, VICTORY_COMMITTED_QUERY=1: there
 # QueryWorkingSetEx holds Wine's memory lock while it reads /proc/self/pagemap
 # (1.5 s of every 8 in the world), where VirtualQuery is cheap.
+# VICTORY_AMBIENT=1 (the estimate from the frame) where Play-VIctory.cmd has
+# constant:0.8: the prologue's rooms were dark red and its yard milky white
+# with the constant, lit by their lamps and the sunset with the estimate.
 for setting in \
     VICTORY_AMBIENT_AIR=1.5 VICTORY_TEXTURE_NO_WAIT=1 VICTORY_RELAY=2 VICTORY_WIDE_BACK=1 \
     VICTORY_CARD_REHASH_RUNS=1 VICTORY_JOIN_COPIES=1 VICTORY_INDIRECT_WINDOW=1 VICTORY_RELAY_COPY=1 \
     VICTORY_CARD_STEPS=2 VICTORY_INDIRECT_BATCH=2 VICTORY_MAP_THREADS=1 VICTORY_CARD_AWAKE=1 \
-    VICTORY_SHOW_AFTER=1 VICTORY_AMBIENT=constant:0.8 VICTORY_THIN=0 VICTORY_JOIN_PARTS=0 \
+    VICTORY_SHOW_AFTER=1 VICTORY_AMBIENT=1 VICTORY_THIN=0 VICTORY_JOIN_PARTS=0 \
     VICTORY_TEXTURE_GUARD=0 VICTORY_PORT_CONSTANTS=1 VICTORY_PORT_CBV=1 \
     VICTORY_UPLOAD_AHEAD=1 VICTORY_LEVELS_ON_DEMAND=1 VICTORY_CARD_BUFFERS_MIN_KB=64 \
     VICTORY_COMMITTED_QUERY=1; do
