@@ -23,7 +23,7 @@ What it took, in the order it was found (each in its own code comment):
   all of them at every map and unmap, while the client holds Wine's one lock
   for all memory: 1-2 ms each, and every fault, protection change and write
   watch of every thread waited behind them (the title's own frame took a
-  second). `~/src/proton-ge-victory/wineserver-view-tree.patch` keeps them in
+  second). `patches/wineserver-view-tree.patch` (against GE-Proton11-14's wine) keeps them in
   a tree as well; built against GE-Proton11-14 and installed as the compat
   tool `GE-Proton11-14-victory`, which `scripts/play-proton.sh` uses when it
   is there. The title's own frame: about 18 ms.
