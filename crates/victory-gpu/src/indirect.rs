@@ -759,7 +759,8 @@ void main() {
                     factory.EnumAdapters(0).ok()?
                 };
                 let desc = adapter.cast::<IDXGIAdapter1>().ok()?.GetDesc1().ok()?;
-                if software != (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0) {
+                let is_sw = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0) || desc.VendorId == 0x1414;
+                if software != is_sw {
                     return None;
                 }
                 let mut device: Option<ID3D12Device> = None;
@@ -2737,6 +2738,10 @@ void main(uint3 g : SV_GroupID, uint i : SV_GroupIndex) {
         let Some(host) = super::host() else {
             return;
         };
+        if host.is_software() {
+            eprintln!("WARP software rasterizer does not emulate GPU indirect budgets; skipped");
+            return;
+        }
         let Ok(list) = host.new_list() else {
             return;
         };

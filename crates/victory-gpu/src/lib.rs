@@ -50,6 +50,8 @@ mod port;
 mod port_cbv;
 #[cfg(windows)]
 mod port_journal;
+#[cfg(windows)]
+mod port_rt;
 mod land;
 pub mod list;
 pub mod object;
@@ -103,6 +105,7 @@ mod texback;
 
 #[cfg(windows)]
 pub use host::on_failure;
+pub use host::log_defrag_counters;
 
 /// Whether `switch` is on now, if it is one of those `VICTORY_AB` turns on and
 /// off while the title runs (`ab`).
