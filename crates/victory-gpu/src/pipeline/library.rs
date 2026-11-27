@@ -610,6 +610,9 @@ fn store(library: &Library, wide: &HSTRING, pso: &ID3D12PipelineState) {
         Ok(()) => {
             library.added.fetch_add(1, Ordering::Relaxed);
         }
+        // The name is already stored (made twice at once): the library keeps the first, so
+        // nothing is lost and the next run loads it.
+        Err(e) if e.code() == windows::Win32::Foundation::E_INVALIDARG => {}
         // Said, once a name: a refused store was not seen at all before (issue #70), and a
         // pipeline never stored is made again by every run.
         Err(e) => {

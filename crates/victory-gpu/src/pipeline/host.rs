@@ -1155,8 +1155,6 @@ mod tests {
         }
     }
 
-    /// A mesh pipeline made once is loaded from the library the next time,
-    /// not compiled again (a stream without a topology never loads).
     /// A name the library does not have is `E_INVALIDARG`, the code the trail now calls
     /// "not in it yet" (issue #70 read it as the library refusing the pipeline).
     #[test]
@@ -1193,6 +1191,8 @@ mod tests {
         }
     }
 
+    /// A mesh pipeline made once is loaded from the library the next time,
+    /// not compiled again (a stream without a topology never loads).
     #[test]
     fn a_mesh_pipeline_loads_from_the_library() {
         let Some(host) = host() else {
