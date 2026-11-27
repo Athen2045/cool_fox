@@ -396,3 +396,7 @@ fn a_frame_of_a_titles_size() {
         println!("{}", r.text(what));
     }
 }
+
+// The D3D12 Agility SDK exports (`build.rs`), as in the unit tests.
+#[path = "../src/agility_tests.rs"]
+mod agility;
