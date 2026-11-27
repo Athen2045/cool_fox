@@ -417,6 +417,16 @@ fn wait(p: &Pending, frame: u64) {
     if budget.is_zero() {
         return;
     }
+    // Not for one being made longer than that already: what takes seconds
+    // ends in some later frame whatever this one waits, and every frame
+    // that drew with it waited the whole budget for nothing (run merged1:
+    // one pipeline 91 s in the making, 500 ms of each 684 ms frame).
+    // Passes over the screen keep their budget. `VICTORY_PIPELINE_WAIT_LONG=1`:
+    // waited for, as before. Asked before the budget is taken, so none of
+    // it is held for nothing.
+    if !screen && making_long(p) {
+        return;
+    }
     // The frame the budget belongs to, and what was waited of it (or is
     // taken by a thread waiting now); of the passes over the screen too.
     static SPENT: [Mutex<(u64, Duration)>; 2] = [const { Mutex::new((u64::MAX, Duration::ZERO)) }; 2];
@@ -446,15 +456,6 @@ fn wait(p: &Pending, frame: u64) {
         left
     };
     if left.is_zero() {
-        return;
-    }
-    // Not for one being made longer than that already: what takes seconds
-    // ends in some later frame whatever this one waits, and every frame
-    // that drew with it waited the whole budget for nothing (run merged1:
-    // one pipeline 91 s in the making, 500 ms of each 684 ms frame).
-    // Passes over the screen keep their budget. `VICTORY_PIPELINE_WAIT_LONG=1`:
-    // waited for, as before.
-    if !screen && making_long(p) {
         return;
     }
     let started = Instant::now();

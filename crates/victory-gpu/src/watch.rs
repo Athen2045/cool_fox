@@ -630,7 +630,7 @@ fn watch_chunk() -> Option<usize> {
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())
             .unwrap_or(if crate::host::under_wine() { 8 } else { 0 });
-        (mb > 0).then(|| (mb << 20) / PAGE)
+        (mb > 0).then_some((mb << 20) / PAGE)
     })
 }
 
