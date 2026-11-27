@@ -460,14 +460,6 @@ pub fn structure(program: &Program) -> Result<Structured, ShaderError> {
     structure_wide(program, &HashSet::new())
 }
 
-/// [`structure`] without taking any branch wave-wide of its own accord
-/// ([`Lanes::lane_split_loses`]): every branch on a lane mask split per lane, as before
-/// issue #66. Inexact where a branch's arms run lanes whose own bit went the other way; for a
-/// program the exact form does not translate.
-pub fn structure_per_lane(program: &Program) -> Result<Structured, ShaderError> {
-    structure_with(program, &HashSet::new(), false)
-}
-
 /// [`structure`], with the branches that close the blocks of `wide` kept as the console has
 /// them: one decision for the whole wave (`s_cbranch_execz` and `vccz`: taken when no lane's
 /// bit is set; `execnz` and `vccnz`: when some lane's is; SCC of a mask operation likewise,
@@ -476,14 +468,7 @@ pub fn structure_per_lane(program: &Program) -> Result<Structured, ShaderError> 
 /// stays a guard on every vector instruction, as it is on the console. For a console wave
 /// run as two host waves, which exchange that decision and can then meet (a group barrier)
 /// inside the branch.
-///
-/// Besides `wide`, every branch on a lane mask whose arms the console runs with lanes whose
-/// own bit went the other way ([`Lanes::lane_split_loses`]) is kept as the console has it.
 pub fn structure_wide(program: &Program, wide: &HashSet<usize>) -> Result<Structured, ShaderError> {
-    structure_with(program, wide, true)
-}
-
-fn structure_with(program: &Program, wide: &HashSet<usize>, exact: bool) -> Result<Structured, ShaderError> {
     let mut l = Lanes::new(program)?;
     l.wide = wide.clone();
     loop {
@@ -494,13 +479,7 @@ fn structure_with(program: &Program, wide: &HashSet<usize>, exact: bool) -> Resu
             return Err(TOO_LARGE);
         }
         if wrong.is_empty() && new_derived.is_empty() {
-            let loses = if exact { l.lane_split_loses(&execs) } else { Vec::new() };
-            if loses.is_empty() {
-                return l.finish(&execs, &cond);
-            }
-            l.wide.extend(loses);
-            l.reset();
-            continue;
+            return l.finish(&execs, &cond);
         }
         l.unresolved.extend(wrong);
         l.derived_phis.extend(new_derived);
@@ -639,70 +618,6 @@ impl<'a> Lanes<'a> {
             scc_every: HashSet::new(),
             wave_any: vec![None; blocks.len()],
         })
-    }
-
-    /// The branches on a lane mask (SCC of a mask operation, VCC) that splitting per lane
-    /// gets wrong: the console takes one of them with the whole wave, and an arm runs vector
-    /// instructions under an EXEC that holds lanes whose own bit went the other way. With
-    /// `s_and_b64 s, vcc, exec` and `s_cbranch_scc0` around arms that keep EXEC, every
-    /// active lane runs the arm the wave chose (issue #66); split per lane, those whose own
-    /// bit is clear ran the other one. Where the arm narrows EXEC to the lanes that went its
-    /// way (`s_and_saveexec_b64` and `s_cbranch_execz`), the split is exact and kept. Not
-    /// branches every lane decides alike (`when` over uniform atoms only).
-    fn lane_split_loses(&mut self, execs: &[Vec<Option<Bool>>]) -> Vec<usize> {
-        let p = self.p;
-        let n = p.blocks.len();
-        let succ = |b: usize| -> Vec<usize> {
-            match p.blocks[b].exit {
-                Exit::Jump(t) => vec![t],
-                Exit::Branch { taken, not_taken } => vec![taken, not_taken],
-                _ => Vec::new(),
-            }
-        };
-        // the blocks reachable from `from` without passing `d` again
-        let reach = |d: usize, from: usize| -> Vec<bool> {
-            let mut seen = vec![false; n];
-            let mut work = vec![from];
-            while let Some(b) = work.pop() {
-                if b == d || seen[b] {
-                    continue;
-                }
-                seen[b] = true;
-                work.extend(succ(b));
-            }
-            seen
-        };
-        let mut out = Vec::new();
-        for d in 0..n {
-            let Exit::Branch { taken, not_taken } = p.blocks[d].exit else { continue };
-            let (Some(when), Some(_)) = (self.when[d], self.wave_any[d]) else { continue };
-            let Some(last) = p.blocks[d].insts.last() else { continue };
-            let name = last.name();
-            if self.wide.contains(&d) || !(name.starts_with("s_cbranch_scc") || name.starts_with("s_cbranch_vcc")) {
-                continue;
-            }
-            if self.b.support(when).iter().all(|a| matches!(a, Atom::Uniform(_))) {
-                continue;
-            }
-            let (t, f) = (reach(d, taken), reach(d, not_taken));
-            let not_when = self.b.not(when);
-            let loses = (0..n).any(|b| {
-                // blocks of one arm only (past the join both arms run)
-                let side = match (t[b], f[b]) {
-                    (true, false) => when,
-                    (false, true) => not_when,
-                    _ => return false,
-                };
-                p.blocks[b].insts.iter().zip(&execs[b]).any(|(inst, exec)| {
-                    !matches!(inst.fields, Fields::Sop { .. } | Fields::Sopp { .. } | Fields::Smem { .. })
-                        && exec.is_some_and(|e| !self.b.implies(e, side))
-                })
-            });
-            if loses {
-                out.push(d);
-            }
-        }
-        out
     }
 
     fn reset(&mut self) {

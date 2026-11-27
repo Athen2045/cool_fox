@@ -1,14 +1,12 @@
 # Fetches Microsoft's D3D12 Agility SDK runtime (D3D12Core.dll, and the debug
-# layer d3d12SDKLayers.dll) from NuGet into D3D12\ beside victory.exe. For a
-# build with `--features agility-sdk`, which exports D3D12SDKVersion and
-# D3D12SDKPath for it (apps/victory/src/agility.rs): needed on Windows 10, whose
-# own D3D12 has no shader model 6.6 bindless heaps. Such a build needs the DLL
-# there: without it D3D12 does not start (D3D12_ERROR_INVALID_REDIST). Also beside
-# the test programs in target\debug\deps, for tests run with
-# `--features agility-sdk` (crates/victory-shader/src/agility_tests.rs): on
-# Windows 10 the GPU tests otherwise find no shader model 6.6 device (issue #74).
-# Not for Wine or Proton. The DLLs are Microsoft's, under the package's license, and are
-# never committed (docs/asset-policy.md).
+# layer d3d12SDKLayers.dll) from NuGet into D3D12\ beside victory.exe (and beside
+# the test programs in target\debug\deps). For a build with `--features agility-sdk`,
+# which exports D3D12SDKVersion and D3D12SDKPath for it (apps/victory/src/agility.rs,
+# crates/victory-shader/src/agility_tests.rs, crates/victory-gpu/src/agility_tests.rs):
+# needed on Windows 10, whose own D3D12 has no shader model 6.6 bindless heaps.
+# Such a build needs the DLL there: without it D3D12 does not start
+# (D3D12_ERROR_INVALID_REDIST). Not for Wine or Proton. The DLLs are Microsoft's,
+# under the package's license, and are never committed (docs/asset-policy.md).
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\get-agility-sdk.ps1 [-Build release|diag]
 param(

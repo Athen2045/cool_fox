@@ -517,15 +517,6 @@ fn a_wave_or_inside(skip: u32, name: &str) {
     let branch = (0..p.blocks.len())
         .find(|&b| p.blocks[b].insts.last().is_some_and(|i| i.name() == name))
         .expect("the branch");
-    // SCC of `s_and_saveexec`, around code every lane runs (`s_or_saveexec_b64 -1`): the
-    // structure keeps that branch the console's, wave-wide, of its own accord (#66)
-    if name == "s_cbranch_scc0" {
-        let st = structure::structure(&p).expect("structure");
-        assert_eq!(st.wide, HashSet::from([branch]));
-        assert_eq!(st.wave_any[branch], Some(false));
-        lowered(&native, &p, &HashSet::new()).expect("lower");
-        return;
-    }
     // per lane, the two host waves cannot meet inside the branch
     lower::take_needs();
     let per_lane = lowered(&native, &p, &HashSet::new());
@@ -1222,23 +1213,11 @@ fn the_mask_scc_in_a_lane_branch_lowers_without_its_exec_skip() {
     lower::take_needs();
     let direct = lowered(&native, &p, &HashSet::new());
     let needs = lower::take_needs();
-    // The branch on the mask's SCC is the console's, one for the whole wave: kept so
-    // ([`structure::structure`]), it needs every lane where it stands, and the EXEC skip
-    // around it leaves some elsewhere.
-    assert!(
-        matches!(&direct, Err(ShaderError::Unsupported { what, .. }) if *what == "a wave-wide branch where not every lane runs"),
-        "{:?}",
-        direct.err()
-    );
+    assert!(matches!(
+        direct,
+        Err(ShaderError::Unsupported { what, .. }) if lower::needs_every_lane(what)
+    ));
     let st = structure::structure(&p).expect("structure");
-    let scc_branch = (0..p.blocks.len())
-        .find(|&b| p.blocks[b].insts.last().is_some_and(|i| i.name() == "s_cbranch_scc0"))
-        .expect("the branch on SCC");
-    assert!(st.wide.contains(&scc_branch), "the branch on the mask's SCC is taken wave-wide");
-    assert!(
-        structure::structure_per_lane(&p).expect("structure").wide.is_empty(),
-        "split per lane only when asked"
-    );
     let enclosing = lower::branches_around(&st, &needs).expect("enclosing lane branch");
     assert_eq!(enclosing.len(), 1);
     assert_eq!(
