@@ -467,7 +467,11 @@ fn library() -> Option<&'static Library> {
                 tracing::info!("no host pipeline library (VICTORY_LIBRARY=0): pipelines not kept");
                 return None;
             }
-            let device = crate::host::host()?.device.cast::<ID3D12Device1>().ok()?;
+            let device = crate::host::host()?
+                .device
+                .cast::<ID3D12Device1>()
+                .inspect_err(|e| tracing::warn!(error = %e, "no ID3D12Device1: pipelines are not kept"))
+                .ok()?;
             let blob = DIR.get().map_or(Blob::None, |d| Blob::of(d));
             let library = open(&device, blob);
             if library.is_none() {
@@ -482,6 +486,26 @@ fn library() -> Option<&'static Library> {
 /// adapter or driver change, damage).
 fn open(device: &ID3D12Device1, blob: Blob) -> Option<Library> {
     let make = |bytes: &[u8]| -> windows::core::Result<ID3D12PipelineLibrary1> {
+        // An empty library is asked for with no pointer at all: an empty
+        // slice's pointer is not null, and vkd3d-proton (Proton on Linux)
+        // refuses a pointer with a length of 0 (E_INVALIDARG), so no
+        // pipeline was ever kept there and every start made all of them again.
+        if bytes.is_empty() {
+            let mut library: *mut core::ffi::c_void = std::ptr::null_mut();
+            // SAFETY: the device's own method, with no blob, the interface's
+            // IID and a place for it.
+            unsafe {
+                (Interface::vtable(device).CreatePipelineLibrary)(
+                    device.as_raw(),
+                    std::ptr::null(),
+                    0,
+                    &ID3D12PipelineLibrary1::IID,
+                    &mut library,
+                )
+                .ok()?;
+                return Ok(ID3D12PipelineLibrary1::from_raw(library));
+            }
+        }
         // SAFETY: the bytes outlive the library (kept beside it).
         unsafe {
             device.CreatePipelineLibrary::<ID3D12PipelineLibrary>(bytes)?.cast()
@@ -513,7 +537,9 @@ fn open(device: &ID3D12Device1, blob: Blob) -> Option<Library> {
     // The rejected bytes are let go (a mapped file is unmapped) before the
     // empty library is made: nothing reads them any more.
     drop(blob);
-    let library = make(&[]).ok()?;
+    let library = make(&[])
+        .inspect_err(|e| tracing::warn!(error = %e, "the host refused an empty pipeline library"))
+        .ok()?;
     Some(Library {
         library,
         _blob: Blob::None,
@@ -879,6 +905,58 @@ pub(crate) fn note_time(key: &str, ms: u64) {
         *known = ms;
         // With the next save of the early list.
         USED_CHANGED.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Title pipelines whose making ended the thread making them (a stack
+/// overflow in the host's shader compiler: vkd3d-proton's DXIL-to-SPIR-V
+/// conversion of one compute shader used all 256 MiB of a worker's stack,
+/// and Wine ended the thread without a word, run 7): not made again, in this
+/// run or a later one. One a line, with what it was made of.
+/// `VICTORY_REFUSED_RETRY=1`: tried again (the list is not read).
+const REFUSED_FILE: &str = "refused-pipelines.txt";
+static REFUSED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+fn refused_ones() -> std::sync::MutexGuard<'static, Option<HashSet<String>>> {
+    let mut refused = REFUSED.lock().unwrap_or_else(|e| e.into_inner());
+    if refused.is_none() {
+        let retry = std::env::var_os("VICTORY_REFUSED_RETRY").is_some_and(|v| v == "1");
+        let listed = if retry {
+            String::new()
+        } else {
+            DIR.get().and_then(|d| std::fs::read_to_string(d.join(REFUSED_FILE)).ok()).unwrap_or_default()
+        };
+        let set: HashSet<String> =
+            listed.lines().filter_map(|l| l.split_whitespace().next()).map(str::to_owned).collect();
+        if !set.is_empty() {
+            tracing::info!(pipelines = set.len(), "title pipelines not made: their making ended a thread in an earlier run");
+        }
+        *refused = Some(set);
+    }
+    refused
+}
+
+/// Whether making the title pipeline with `key` ended its thread, in this
+/// run or an earlier one.
+pub(crate) fn refused(key: &str) -> bool {
+    refused_ones().as_ref().is_some_and(|r| r.contains(key))
+}
+
+/// Making the title pipeline with `key` (of `what`) ended its thread: kept,
+/// so no later run gives it a thread again.
+pub(crate) fn note_refused(key: &str, what: &str) {
+    let mut refused = refused_ones();
+    if !refused.get_or_insert_default().insert(key.to_owned()) {
+        return;
+    }
+    let Some(dir) = DIR.get() else { return };
+    let line = format!("{key} {what}\n");
+    let written = std::fs::create_dir_all(dir).and_then(|()| {
+        use std::io::Write;
+        std::fs::OpenOptions::new().create(true).append(true).open(dir.join(REFUSED_FILE))?.write_all(line.as_bytes())
+    });
+    if let Err(e) = written {
+        tracing::warn!(error = %e, "refused pipeline not noted");
     }
 }
 
