@@ -1,11 +1,48 @@
 # Running on Linux (Fedora) with Proton
 
 VIctory is a Windows program, and on Linux it runs under Proton, whose
-vkd3d-proton turns Direct3D 12 into Vulkan. **This has not been tried with the
-title yet.** What is known (2026-11-26, Wine 11.21): `victory.exe` builds on Fedora
-and starts under Wine. The loader's unit tests pass under Wine, and 148 of 150 of the
-runtime services' do. One failure is Wine lacking `ws2_32!WSAConnectByList`, the
-other an NTFS-only test. Nothing has drawn a frame under vkd3d-proton.
+vkd3d-proton turns Direct3D 12 into Vulkan. Where it stands (2026-11-26,
+GE-Proton11-14, RTX 5060 8 GB, Xeon W-1390P, 62 GB, Series S at 1080p): menus
+at 30 fps, the prologue at about 200 ms a frame with the card 93-100 % busy,
+the world loaded in 21 s. Rooms are too dark (no ray tracing, as on Windows).
+
+What it took, in the order it was found (each in its own code comment):
+
+- **The log.** Proton passes no stderr through: `VICTORY_LOG_FILE` (the script
+  sets `~/.local/state/victory/victory.log`); crash reports and panics go there too.
+- **The pipeline cache.** vkd3d-proton refused an empty pipeline library
+  (`E_INVALIDARG` for a non-null pointer of length 0), so no pipeline was ever
+  kept and every start compiled some 1,300 again.
+- **A pipeline that ends its thread.** One compute shader (`fdd56d97a806bcca`)
+  overflows a worker's 256 MiB stack in vkd3d-proton's DXIL-to-SPIR-V, and
+  Wine ends the thread without a word; every frame then waited 500 ms for it.
+  Dead workers are now noticed and replaced, and the pipeline is listed in
+  `refused-pipelines.txt` in the cache folder (`VICTORY_REFUSED_RETRY=1`).
+- **The wineserver's views.** The title shows its physical pages in some
+  30,000 views. The wineserver keeps a process's views in a list and walks
+  all of them at every map and unmap, while the client holds Wine's one lock
+  for all memory: 1-2 ms each, and every fault, protection change and write
+  watch of every thread waited behind them (the title's own frame took a
+  second). `patches/wineserver-view-tree.patch` (against GE-Proton11-14's wine) keeps them in
+  a tree as well; built against GE-Proton11-14 and installed as the compat
+  tool `GE-Proton11-14-victory`, which `scripts/play-proton.sh` uses when it
+  is there. The title's own frame: about 18 ms.
+- **Wine's memory lock otherwise.** `QueryWorkingSetEx` holds it while it reads
+  `/proc/self/pagemap` (`VICTORY_COMMITTED_QUERY=1`, set by the script); write
+  watches are asked in pieces of 8 MiB (`VICTORY_WATCH_CHUNK_MB`).
+- **The card's memory.** Linux moves nothing that does not fit to the PC's
+  memory: what the desktop asks for next is refused (the shell aborted).
+  Freed texture and staging memory is used again once the card is done with
+  it (`VICTORY_POOL_FENCED`), small cards keep fewer empty blocks, and under
+  Wine the budget planned with is the system's less 1 GiB
+  (`VICTORY_CARD_BUDGET_MB`).
+- **Thread priorities.** Wine sets the niceness a thread's priority asks for
+  only if it may raise priority (a hard `RLIMIT_NICE` above 20); otherwise all
+  run alike and the title's threads wait for cores behind our pipeline
+  workers and streaming. In the `gamemode` group (allowed -10 on Fedora): about
+  105 ms a frame against 120, p90 114 against 140. The script says so when off.
+- **Do not change `VICTORY_OUTPUT` on Series S**: any size but 1920x1080 made
+  the title divide by zero at +0x28f03e8 while loading (its FidelityFX jitter).
 
 ## 1. What the PC needs
 
