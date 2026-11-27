@@ -1,6 +1,9 @@
 # Fetches Microsoft's D3D12 Agility SDK runtime (D3D12Core.dll, and the debug
 # layer d3d12SDKLayers.dll) from NuGet into D3D12\ beside victory.exe, which
-# exports D3D12SDKVersion and D3D12SDKPath for it (apps/victory/src/agility.rs).
+# exports D3D12SDKVersion and D3D12SDKPath for it (apps/victory/src/agility.rs),
+# and beside the test programs in target\debug\deps, which export the same
+# (crates/victory-shader/src/agility_tests.rs): on Windows 10 the GPU tests
+# otherwise find no shader model 6.6 device (issue #74).
 # Needed on Windows 10, whose own D3D12 has no shader model 6.6 bindless heaps;
 # harmless on Windows 11 (the newer runtime of the two is used). Not for Wine or
 # Proton. The DLLs are Microsoft's, under the package's license, and are never
@@ -9,12 +12,16 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\get-agility-sdk.ps1 [-Build release|diag]
 param(
     [ValidateSet('release', 'diag', 'debug')]
-    [string[]]$Build = @('release', 'diag')
+    [string[]]$Build = @('release', 'diag', 'debug')
 )
 $ErrorActionPreference = 'Stop'
 # Keep the middle number equal to D3D12SDKVersion in apps/victory/src/agility.rs.
 $version = '1.619.6'
-$targets = $Build | ForEach-Object { Join-Path $PSScriptRoot "..\target\$_" } | Where-Object { Test-Path $_ }
+$targets = $Build | ForEach-Object {
+    $dir = Join-Path $PSScriptRoot "..\target\$_"
+    $dir
+    Join-Path $dir 'deps'  # the test programs
+} | Where-Object { Test-Path $_ }
 if (-not $targets) {
     Write-Error "No target\$($Build -join ', target\') yet: build victory first (cargo build --release --locked -p victory)."
 }

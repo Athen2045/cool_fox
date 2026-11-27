@@ -58,8 +58,10 @@ D3D12 has no shader model 6.6 bindless heaps, and root signatures then fail with
 powershell -ExecutionPolicy Bypass -File scripts\get-agility-sdk.ps1
 ```
 
-It puts `D3D12Core.dll` from NuGet (version 1.619.6) in `target\release\D3D12\` and
-`target\diag\D3D12\`, where `victory.exe` tells the runtime to look. On Windows 11
+It puts `D3D12Core.dll` from NuGet (version 1.619.6) in `D3D12\` beside `victory.exe` in
+`target\release` and `target\diag`, where it tells the runtime to look, and beside the
+test programs in `target\debug\deps`, so the GPU tests find a shader model 6.6 device.
+Run it again after the first `cargo test` if the tests were built later. On Windows 11
 this is optional: the newer of the two runtimes is used. It is not needed under
 Wine or Proton.
 
