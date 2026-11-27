@@ -499,6 +499,42 @@ pub fn emit(
     io: &io::Io,
     res: &resource::Resources,
 ) -> Result<HostShader, ShaderError> {
+    let exact = emit_forms(c, native, p, st, io, res);
+    // Branches on a lane mask that [`structure::structure`] keeps wave-wide because splitting
+    // them per lane is wrong (issue #66) need every lane where they stand; a program none
+    // of whose forms gives them that is taken split per lane, as before: inexact there, but
+    // drawn. `VICTORY_LANE_SPLIT=exact` refuses it instead.
+    if !matches!(exact, Err(ShaderError::Unsupported { .. }))
+        || st.wide.is_empty()
+        || std::env::var_os("VICTORY_LANE_SPLIT").is_some_and(|v| v == "exact")
+    {
+        return exact;
+    }
+    let Ok(per_lane) = structure::structure_per_lane(p) else {
+        return exact;
+    };
+    let Ok(res) = resource::track(p, &native.layout, native.stage, Some(&per_lane)) else {
+        return exact;
+    };
+    let again = emit_forms(c, native, p, &per_lane, io, &res);
+    if again.is_ok() && std::env::var_os("VICTORY_WAVE_WHY").is_some() {
+        eprintln!(
+            "WAVE64-RETRY branches on a lane mask split per lane (inexact; {} of them): {}",
+            st.wide.len(),
+            exact.as_ref().err().map(ToString::to_string).unwrap_or_default()
+        );
+    }
+    again
+}
+
+fn emit_forms(
+    c: &Container,
+    native: &NativeProgram,
+    p: &ir::Program,
+    st: &structure::Structured,
+    io: &io::Io,
+    res: &resource::Resources,
+) -> Result<HostShader, ShaderError> {
     // (what an earlier program's lowering on this thread left behind)
     lower::take_needs();
     let original = emit_program(c, native, p, st, io, res);
