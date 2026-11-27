@@ -16,8 +16,12 @@ What it took, in the order it was found (each in its own code comment):
 - **A pipeline that ends its thread.** One compute shader (`fdd56d97a806bcca`)
   overflows a worker's 256 MiB stack in vkd3d-proton's DXIL-to-SPIR-V, and
   Wine ends the thread without a word; every frame then waited 500 ms for it.
-  Dead workers are now noticed and replaced, and the pipeline is listed in
-  `refused-pipelines.txt` in the cache folder (`VICTORY_REFUSED_RETRY=1`).
+  Dead workers are now noticed and replaced, and the pipeline is made once more
+  on a thread with a 4 GiB stack (reserved, not committed;
+  `VICTORY_PIPELINE_RESCUE=0`: not). Only if that thread ends too is the pipeline
+  listed in `refused-pipelines.txt` in the cache folder (`VICTORY_REFUSED_RETRY=1`)
+  and left out: its dispatch is then dropped, which #39 saw right before the
+  title's write to 0 at `+0x23cf683`.
 - **The wineserver's views.** The title shows its physical pages in some
   30,000 views. The wineserver keeps a process's views in a list and walks
   all of them at every map and unmap, while the client holds Wine's one lock

@@ -41,9 +41,14 @@ pub(crate) struct Pending {
     /// Taken by a worker from [`Queue::slow`].
     was_slow: AtomicBool,
     made: OnceLock<Option<HostPipeline>>,
-    /// Its making ended the thread making it ([`reap`]): `made` is then
-    /// never set (the dead thread holds it), and no one waits for it.
+    /// A thread is making it ([`Pending::make_with`]); others wait for `made`
+    /// or `failed` instead of making it too.
+    building: AtomicBool,
+    /// Its making ended the thread making it twice ([`reap`], [`rescue`]):
+    /// `made` is then never set, and no one waits for it.
     failed: AtomicBool,
+    /// Made again on a thread with [`RESCUE_STACK`] after its worker ended ([`rescue`]).
+    rescued: AtomicBool,
     /// When its making began ([`Pending::make`]), for [`wait`].
     began: OnceLock<Instant>,
     /// What identifies it across runs (shader containers and state), and
@@ -157,7 +162,9 @@ impl Pending {
             queue_state: AtomicU8::new(NOT_QUEUED),
             was_slow: AtomicBool::new(false),
             made: OnceLock::new(),
+            building: AtomicBool::new(false),
             failed: AtomicBool::new(false),
+            rescued: AtomicBool::new(false),
             began: OnceLock::new(),
             key,
             used: AtomicBool::new(false),
@@ -198,17 +205,32 @@ impl Pending {
         });
     }
 
+    /// Makes it with `build` unless made, or waits for the thread making it until it is made
+    /// or given up ([`reap`]). Not inside `made`'s initialisation: a thread that ends while
+    /// making a pipeline (a stack overflow in vkd3d-proton under Wine ends it without
+    /// unwinding) would hold that for good, and every later caller (a dispatch waiting for
+    /// its compute pipeline, on the title's own thread) would wait for ever.
     fn make_with(&self, build: impl FnOnce() -> Option<HostPipeline>) {
-        self.made.get_or_init(|| {
+        if self.made.get().is_none() {
+            if self.building.swap(true, Ordering::AcqRel) {
+                let (lock, done) = &DONE;
+                let mut held = lock.lock().unwrap_or_else(|e| e.into_inner());
+                while self.made.get().is_none() && !self.failed.load(Ordering::Acquire) {
+                    // (timed: a notification may come between the test and the wait)
+                    held = done.wait_timeout(held, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
+                }
+                return;
+            }
             // A failed translation must complete this queue entry and wake its waiters.
-            match catch_unwind(AssertUnwindSafe(build)) {
+            let made = match catch_unwind(AssertUnwindSafe(build)) {
                 Ok(pipeline) => pipeline,
                 Err(_) => {
                     tracing::warn!(shaders = ?self.shaders, "host pipeline build panicked");
                     None
                 }
-            }
-        });
+            };
+            let _ = self.made.set(made);
+        }
         let (lock, done) = &DONE;
         let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
         done.notify_all();
@@ -772,11 +794,14 @@ fn names(p: &Pending) -> Vec<String> {
 
 /// Pipelines whose worker ended while making them (a stack overflow in the
 /// host's compiler ends a thread under Wine without an exception anyone can
-/// catch): failed, so draws go without them at once and no frame waits for
-/// them; noted, so no later run makes them; and the worker started again.
-/// Before this, the pipeline stayed "being made" for good, and every frame
-/// that drew with it waited the whole half second (run 6: 500 ms of each
-/// 525 ms frame).
+/// catch): made once more on a thread with [`RESCUE_STACK`] ([`rescue`]), and the
+/// worker started again. A pipeline whose second making ends its thread too is
+/// failed, so draws go without it at once and no frame waits for it, and noted,
+/// so no later run makes it. Before this, the pipeline stayed "being made" for
+/// good, and every frame that drew with it waited the whole half second (run 6:
+/// 500 ms of each 525 ms frame); then it was failed at the first death, and its
+/// dispatch dropped (#39: `CS_Prop_BatchNoCull` under Proton, right before the
+/// title's write to 0 at +0x23cf683).
 fn reap() {
     for (i, slot) in NOW_MAKING.iter().enumerate() {
         let dead = {
@@ -788,30 +813,100 @@ fn reap() {
         };
         let Some(m) = dead else { continue };
         let p = &m.pipeline;
-        p.failed.store(true, Ordering::Relaxed);
-        super::library::note_refused(&p.key, &hashes(p));
         if p.was_slow.load(Ordering::Relaxed) {
             let mut queue = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
             queue.slow_now = queue.slow_now.saturating_sub(1);
         }
         let _ = WAITING.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |w| Some(w.saturating_sub(1)));
-        {
-            let (lock, done) = &DONE;
-            let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
-            done.notify_all();
-        }
+        let again = rescues() && !p.rescued.swap(true, Ordering::AcqRel) && rescue(p.clone());
         tracing::warn!(
             pipeline = %hashes(p),
             names = ?names(p),
             key = %p.key,
             thread = m.thread,
             after_ms = m.since.elapsed().as_millis() as u64,
+            again,
             "a pipeline worker ended while making a pipeline (a stack overflow in the host's compiler?): \
-             its draws go without it, later runs leave it out (VICTORY_REFUSED_RETRY=1: tried again), \
+             made again on a thread with a larger stack if `again` (VICTORY_PIPELINE_RESCUE=0: not), \
              and the worker is started again"
         );
+        if !again {
+            give_up(p);
+        }
         spawn_worker(i);
     }
+    let gone: Vec<Making> = {
+        let mut rescuing = RESCUING.lock().unwrap_or_else(|e| e.into_inner());
+        let (gone, alive) = std::mem::take(&mut *rescuing).into_iter().partition(|m| m.pipeline.made.get().is_some() || ended(m.thread));
+        *rescuing = alive;
+        gone
+    };
+    for m in gone {
+        if m.pipeline.made.get().is_none() {
+            tracing::warn!(
+                pipeline = %hashes(&m.pipeline),
+                names = ?names(&m.pipeline),
+                key = %m.pipeline.key,
+                after_ms = m.since.elapsed().as_millis() as u64,
+                "making a pipeline ended its thread again, with a stack of 4 GiB: \
+                 its draws and dispatches go without it, later runs leave it out (VICTORY_REFUSED_RETRY=1: tried again)"
+            );
+            give_up(&m.pipeline);
+        }
+    }
+}
+
+/// The stack of the thread that makes a pipeline again after its worker ended ([`rescue`]):
+/// reserved only, its pages committed as they are used. vkd3d-proton converts DXIL
+/// recursively over its control flow, and one compute program used all 256 MiB of
+/// a worker's ([`victory_shader::emit::PIPELINE_STACK`]).
+const RESCUE_STACK: usize = 4 << 30;
+
+/// Pipelines being made again on a thread of their own ([`rescue`]), for [`reap`].
+static RESCUING: Mutex<Vec<Making>> = Mutex::new(Vec::new());
+
+/// Whether a pipeline whose worker ended is made again ([`rescue`]); `VICTORY_PIPELINE_RESCUE=0`: not.
+fn rescues() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_PIPELINE_RESCUE").is_none_or(|v| v != "0"))
+}
+
+/// Makes `p` again on a thread with [`RESCUE_STACK`]; whether that thread started.
+fn rescue(p: Arc<Pending>) -> bool {
+    rescue_with(p, |p| HostPipeline::new(&p.shaders, p.graphics.as_deref()))
+}
+
+fn rescue_with(p: Arc<Pending>, build: impl FnOnce(&Pending) -> Option<HostPipeline> + Send + 'static) -> bool {
+    let (tell, told) = std::sync::mpsc::channel();
+    let pipeline = p.clone();
+    let started = std::thread::Builder::new()
+        .name("victory-pipeline-rescue".to_owned())
+        .stack_size(RESCUE_STACK)
+        .spawn(move || {
+            // SAFETY: a plain query of this thread.
+            let _ = tell.send(unsafe { windows::Win32::System::Threading::GetCurrentThreadId() });
+            let made = catch_unwind(AssertUnwindSafe(|| build(&pipeline))).unwrap_or(None);
+            let _ = pipeline.made.set(made);
+            let (lock, done) = &DONE;
+            let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+            done.notify_all();
+        });
+    if started.is_err() {
+        return false;
+    }
+    let Ok(thread) = told.recv() else { return false };
+    RESCUING.lock().unwrap_or_else(|e| e.into_inner()).push(Making { pipeline: p, thread, since: Instant::now() });
+    true
+}
+
+/// `p` is not made: its draws and dispatches go without it, no one waits for it, and no
+/// later run makes it.
+fn give_up(p: &Pending) {
+    p.failed.store(true, Ordering::Release);
+    super::library::note_refused(&p.key, &hashes(p));
+    let (lock, done) = &DONE;
+    let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    done.notify_all();
 }
 
 /// A wait used up what was left of the frame's budget and `p` is still not
@@ -924,7 +1019,7 @@ mod tests {
             let worker = p.clone();
             let worker_entered = &entered;
             scope.spawn(move || {
-                worker.made.get_or_init(|| {
+                worker.make_with(|| {
                     worker_entered.wait();
                     gate.recv().unwrap();
                     None
@@ -954,6 +1049,62 @@ mod tests {
         assert_eq!(worker_count_for(None, 16, true), 8);
         assert_eq!(worker_count_for(None, 24, true), 8);
         assert_eq!(worker_count_for(Some(12), 8, true), 12);
+    }
+
+    /// A thread that ends while making a pipeline without unwinding (ExitThread: what a
+    /// stack overflow in vkd3d-proton does under Wine) leaves it "being made". A second
+    /// caller waits instead of making it too or waiting for ever; [`rescue_with`] makes it
+    /// and wakes it, and a rescue that ends its thread too has [`reap`] give it up.
+    #[test]
+    fn a_pipeline_whose_maker_ended_is_made_again_or_given_up() {
+        fn ends_its_thread(p: Arc<Pending>) {
+            std::thread::spawn(move || {
+                p.make_with(|| {
+                    // SAFETY: ends this test thread, which holds nothing but `p`'s claim.
+                    unsafe { windows::Win32::System::Threading::ExitThread(0) }
+                })
+            });
+        }
+        let waits_for = |p: &Arc<Pending>| {
+            let (tell, told) = std::sync::mpsc::channel();
+            let q = p.clone();
+            std::thread::spawn(move || {
+                q.make_with(|| panic!("the second caller must not make it too"));
+                let _ = tell.send(q.made.get().is_some());
+            });
+            told
+        };
+        for rescue_ends_too in [false, true] {
+            let mut p = Pending::new(Vec::new(), None);
+            p.key = format!("rescue-test-{rescue_ends_too}");
+            let p = Arc::new(p);
+            ends_its_thread(p.clone());
+            let started = Instant::now();
+            while !p.building.load(Ordering::Acquire) && started.elapsed() < Duration::from_secs(10) {
+                std::thread::yield_now();
+            }
+            let told = waits_for(&p);
+            assert!(told.recv_timeout(Duration::from_millis(300)).is_err(), "the second caller waits");
+            assert!(rescue_with(p.clone(), move |_| {
+                if rescue_ends_too {
+                    // SAFETY: as above, the rescue thread.
+                    unsafe { windows::Win32::System::Threading::ExitThread(0) }
+                }
+                None
+            }));
+            if rescue_ends_too {
+                let started = Instant::now();
+                while !p.failed.load(Ordering::Acquire) && started.elapsed() < Duration::from_secs(10) {
+                    reap();
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                assert!(p.failed.load(Ordering::Acquire), "given up once the rescue ended too");
+                assert_eq!(told.recv_timeout(Duration::from_secs(10)), Ok(false));
+            } else {
+                assert_eq!(told.recv_timeout(Duration::from_secs(10)), Ok(true), "made by the rescue");
+                assert!(!p.failed.load(Ordering::Acquire));
+            }
+        }
     }
 
     #[test]
