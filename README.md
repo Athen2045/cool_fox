@@ -50,18 +50,18 @@ cd cool_fox
 cargo build --release --locked -p victory
 ```
 
-On **Windows 10**, also fetch Microsoft's D3D12 Agility SDK runtime once. Its own
-D3D12 has no shader model 6.6 bindless heaps, and root signatures then fail with
-`0x80070057`:
+On **Windows 10**, build with the D3D12 Agility SDK instead. Windows 10's own D3D12 has
+no shader model 6.6 bindless heaps, and root signatures then fail with `0x80070057`:
 
 ```powershell
+cargo build --release --locked -p victory --features agility-sdk
 powershell -ExecutionPolicy Bypass -File scripts\get-agility-sdk.ps1
 ```
 
-It puts `D3D12Core.dll` from NuGet (version 1.619.6) in `target\release\D3D12\` and
-`target\diag\D3D12\`, where `victory.exe` tells the runtime to look. On Windows 11
-this is optional: the newer of the two runtimes is used. It is not needed under
-Wine or Proton.
+The feature makes `victory.exe` ask for Microsoft's `D3D12Core.dll` 1.619.6 in `D3D12\`
+beside it, and the script fetches it from NuGet and puts it there. Such a build needs the
+DLL: without it D3D12 does not start (`0x887E0003`). The default build is unchanged
+and does not need it. Not for Wine or Proton.
 
 ### Launch
 
