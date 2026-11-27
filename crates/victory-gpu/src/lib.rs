@@ -15,7 +15,7 @@
 //! share, [`console`] which console model the title sees. Planned:
 //! `present` (swap chain).
 
-#[cfg(all(test, windows))]
+#[cfg(all(test, windows, feature = "agility-sdk"))]
 mod agility_tests;
 #[cfg(windows)]
 mod ambient;

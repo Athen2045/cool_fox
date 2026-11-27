@@ -4,6 +4,8 @@
 //! With `scripts/get-agility-sdk.ps1` run, `D3D12Core.dll` is in `D3D12\`
 //! beside the test executables, and on Windows 10 the GPU tests find a shader
 //! model 6.6 device (issue #74). Keep the version equal to `victory.exe`'s.
+//! Only with `--features agility-sdk`: without the DLL there, D3D12 does not
+//! start at all (`D3D12_ERROR_INVALID_REDIST`).
 
 #[unsafe(no_mangle)]
 #[used]
